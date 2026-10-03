@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+dist/
+*.sav
+*.log
+.env
+.env.*
+*.user
+.vs/
+__pycache__/
+*.pyc
+docs/ai-change-log.md

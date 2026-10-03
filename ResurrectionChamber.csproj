@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework><LangVersion>latest</LangVersion>
+    <AssemblyName>BaiyeResurrectionChamber</AssemblyName><GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DefineConstants>$(DefineConstants);GAME_HOST</DefineConstants>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;dist/**;art/**;anim/**</DefaultItemExcludes>
+    <GameManaged Condition="'$(GameManaged)' == ''">D:\Steam\steamapps\common\OxygenNotIncluded\OxygenNotIncluded_Data\Managed</GameManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+    <Reference Include="Assembly-CSharp"><HintPath>$(GameManaged)/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(GameManaged)/Assembly-CSharp-firstpass.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(GameManaged)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(GameManaged)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(GameManaged)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
