@@ -29,6 +29,13 @@ class Program
         [Serialize] public int Revivals;
         [Serialize] public ChamberSequence Sequence;
     }
+    [SerializationConfig(MemberSerialization.OptIn)]
+    public class WatcherMotionEnvelope {
+        [Serialize] public Baiye.Resurrection.Rescue.WatcherAction Action;
+        [Serialize] public float ActionSeconds,PickupX,PickupY,PickupScale,ExitProgress,BedEntryProgress;
+        [Serialize] public int ExitCell;
+        [Serialize] public bool PickupFlip,ExitReturning,ExitHealing,ActionEndpointHeld,ExitEndpointHeld,ExitReturnEndpointHeld,BedEntryEndpointHeld;
+    }
     static T RoundTrip<T>(T value) where T:new()
     {
         Manager.Initialize();byte[] data,directory;
@@ -41,6 +48,132 @@ class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Run()
     {
+        Test("watcher has saveable custody, scoped protection and station",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;
+            var station=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation");
+            var marker=asm.GetType("Baiye.Resurrection.Rescue.WatcherCustody");
+            Check(station!=null && marker!=null,"watcher native custody types absent");
+            Check(typeof(ISaveLoadable).IsAssignableFrom(station) && typeof(ISaveLoadable).IsAssignableFrom(marker),"watcher custody not saveable");
+            foreach(var f in new[]{"Target","DroneCell","Phase","Living","Corpse","Cargo","Destination","DeliveryCell","FallbackSource","CareSeconds","Action","ActionSeconds","ActionEndpointHeld","PickupX","PickupY","PickupScale","PickupFlip","ExitPatient","ExitCell","ExitProgress","ExitReturning","ExitHealing","ExitEndpointHeld","ExitReturnEndpointHeld","BedEntryProgress","BedEntryEndpointHeld"})Check(station.GetField(f)?.GetCustomAttributes().Any(a=>a.GetType().Name=="Serialize")==true,"missing saved station field "+f);
+            Check(marker.GetField("Owner")?.GetCustomAttributes().Any(a=>a.GetType().Name=="Serialize")==true,"missing saved owner");
+            Check(station.GetMethod("Owns")!=null,"custody predicate missing");
+        });
+        Test("watcher protections target exact native signatures and actual custody",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;
+            var marker=asm.GetType("Baiye.Resurrection.Rescue.WatcherCustody");
+            var owns=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation").GetMethod("Owns");
+            var fallbackOwns=asm.GetType("Baiye.Resurrection.Rescue.WatcherFallback").GetMethod("Owns");
+            Check(Calls(owns).Any(m=>m.Name=="Contains"),"station protection does not check stored membership");
+            Check(Calls(fallbackOwns).Any(m=>m.Name=="Contains"),"fallback protection does not check stored membership");
+            Check(Calls(marker.GetProperty("Protected").GetMethod).Any(m=>m.Name=="Owns"),"marker alone grants protection");
+            Check(typeof(IncapacitationMonitor.Instance).GetMethod("Bleed",new[]{typeof(float),typeof(IncapacitationMonitor.Instance)})!=null,"bleed signature drift");
+            Check(typeof(SuffocationMonitor).GetMethod("UpdateTimeUntilDeath",BindingFlags.Instance|BindingFlags.NonPublic,null,new[]{typeof(SuffocationMonitor.Instance),typeof(float)},null)!=null,"suffocation signature drift");
+            Check(typeof(Health).GetMethod("Damage",new[]{typeof(float)})!=null,"damage signature drift");
+            Check(typeof(DeathMonitor.Instance).GetMethod("Kill",new[]{typeof(Death)})!=null,"kill signature drift");
+            foreach(var patch in new[]{"WatcherBleedPatch","WatcherSuffocationPatch","WatcherDamagePatch","WatcherDeathPatch"}) {
+                var type=asm.GetType("Baiye.Resurrection.Rescue."+patch);Check(type!=null,"missing patch "+patch);
+                Check(Calls(type.GetMethod("Prefix",BindingFlags.Static|BindingFlags.NonPublic)).Any(m=>m.Name=="IsProtected"),"unscoped patch "+patch);
+            }
+        });
+        Test("watcher care and corpse handoff preserve native patient identity",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;var station=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation");
+            var care=Calls(station.GetMethod("Care",BindingFlags.Instance|BindingFlags.NonPublic));
+            Check(!care.Any(m=>m.DeclaringType==typeof(PatientTransfer)||m.DeclaringType==typeof(MinionStorage)),"care reconstructs patient");
+            var handoff=Calls(typeof(ChamberProcess).GetMethod("TryAcceptReservedRescueBody"));
+            Check(handoff.Any(m=>m.DeclaringType==typeof(Storage)&&m.Name=="Store"),"handoff does not store original corpse");
+            Check(!handoff.Any(m=>m.DeclaringType==typeof(PatientTransfer)||m.DeclaringType==typeof(MinionStorage)),"handoff revives corpse");
+        });
+        Test("watcher routing and destruction use native custody APIs",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;var station=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation");
+            var pass=Calls(station.GetMethod("Passable",BindingFlags.Instance|BindingFlags.NonPublic));
+            Check(pass.Any(m=>m.DeclaringType==typeof(Grid)&&m.Name=="IsValidCellInWorld"),"flight is not restricted to world");
+            Check(pass.Any(m=>m.Name=="IsInsideState"),"flight ignores actual door state");
+            var pickup=Calls(station.GetMethod("Reserve",BindingFlags.Instance|BindingFlags.NonPublic));
+            Check(pickup.Any(m=>m.DeclaringType==typeof(Pickupable)&&m.Name=="Reserve"),"native pickup not reserved");
+            var patch=asm.GetType("Baiye.Resurrection.Rescue.WatcherStorageDestructionPatch");
+            var calls=Calls(patch.GetMethod("Prefix",BindingFlags.Static|BindingFlags.NonPublic));
+            Check(calls.Any(m=>m.DeclaringType==typeof(Storage)&&m.Name=="Drop")&&calls.Any(m=>m.DeclaringType==typeof(Storage)&&m.Name=="Store"),"destruction does not transfer custody");
+            Check(typeof(IEntityConfig).IsAssignableFrom(asm.GetType("Baiye.Resurrection.Rescue.WatcherFallbackConfig")),"no saveable fallback prefab config");
+        });
+        Test("watcher emergency time only advances from paid power callback",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;var station=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation");
+            var settle=station.GetMethod("Settle",BindingFlags.Instance|BindingFlags.NonPublic);Check(settle!=null,"no paid settlement");
+            var patch=asm.GetType("Baiye.Resurrection.ChamberPaidPower");
+            Check(Calls(patch.GetMethod("Postfix",BindingFlags.Static|BindingFlags.NonPublic)).Any(m=>m.DeclaringType==station&&m.Name=="Settle"),"paid circuit callback not connected");
+        });
+        Test("watcher preserves actual custody until animated safe discharge ends",()=>
+        {
+            var station=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.Rescue.WatcherStation");var flags=BindingFlags.Instance|BindingFlags.NonPublic;
+            var care=Calls(station.GetMethod("Care",flags));var manual=Calls(station.GetMethod("ReleaseSafely"));
+            Check(care.Any(m=>m.Name=="BeginExit")&&manual.Any(m=>m.Name=="BeginExit"),"care/manual release bypass animated departure");
+            Check(!care.Concat(manual).Any(m=>m.DeclaringType==typeof(Storage)&&m.Name=="Drop"),"patient released before departure animation");
+            var finish=station.GetMethod("FinishExit",flags);Check(finish!=null,"missing deferred discharge commit");var calls=Calls(finish);
+            Check(calls.Any(m=>m.Name=="IsSafeExitCell")&&calls.Any(m=>m.Name=="CanFinishExit")&&calls.Any(m=>m.Name=="Drop"),"discharge lacks final phase/exit validation");
+        });
+        Test("native save retains pickup contact and reversed/held discharge progress",()=>
+        {
+            var original=new WatcherMotionEnvelope{Action=Baiye.Resurrection.Rescue.WatcherAction.Pickup,ActionSeconds=.4f,PickupX=21.25f,PickupY=35.01f,PickupScale=.005f,PickupFlip=true,ExitProgress=.75f,ExitCell=12345,ExitReturning=true,ExitHealing=true,ExitEndpointHeld=true,ActionEndpointHeld=true,ExitReturnEndpointHeld=true,BedEntryProgress=.6f,BedEntryEndpointHeld=true};
+            var loaded=RoundTrip(original);
+            Check(loaded.Action==original.Action&&loaded.ActionSeconds==.4f&&loaded.PickupX==21.25f&&loaded.PickupY==35.01f&&loaded.PickupScale==.005f&&loaded.PickupFlip,"native save loses source contact or action progress");
+            Check(loaded.ExitProgress==.75f&&loaded.ExitCell==12345&&loaded.ExitReturning&&loaded.ExitHealing&&loaded.ExitEndpointHeld&&loaded.ActionEndpointHeld,"native save loses return direction or visible endpoint hold");
+            Check(loaded.ExitReturnEndpointHeld&&loaded.BedEntryEndpointHeld&&loaded.BedEntryProgress==.6f,"native save loses entry or reverse endpoint holds");
+        });
+        Test("animated patient adapter uses exact native file and progressing frame",()=>
+        {
+            var show=Calls(typeof(ChamberPatientVisual).GetMethod("ShowAnimated"));
+            Check(show.Any(m=>m.Name=="GetAnim")&&show.Any(m=>m.Name=="GetData")&&show.Any(m=>m.Name=="SetPositionPercent")&&show.Any(m=>m.Name=="Place"),"animated adapter bypasses native frame/file validation or production placement solver");
+        });
+        Test("manual discharge binds reversible native body blend without cloning identity",()=>
+        {
+            var visual=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.Rescue.WatcherVisual");var flags=BindingFlags.Instance|BindingFlags.NonPublic;
+            var draw=Calls(visual.GetMethod("DrawExit",flags));
+            Check(draw.Any(m=>m.Name=="EmergencyBlend")&&draw.Any(m=>m.Name=="EmergencyMotion")&&draw.Count(m=>m.Name=="ShowAnimated")==2&&draw.Any(m=>m.Name=="SetAnimatedOpacity"),"manual release or return still hard-cuts between native body views");
+            var create=Calls(visual.GetMethod("Create",flags));Check(!create.Any(m=>m.DeclaringType==typeof(PatientTransfer)||m.DeclaringType==typeof(MinionStorage)),"pose blend creates or restores a second real identity");
+        });
+        Test("watcher visual binds simulation clock, policy and native anchor",()=>
+        {
+            var visual=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.Rescue.WatcherVisual");
+            var sim=Calls(visual.GetMethod("Sim200ms"));var render=Calls(visual.GetMethod("RenderEveryTick"));
+            Check(sim.Any(m=>m.DeclaringType.Name=="WatcherAnimation"&&m.Name=="Update"),"animation policy not wired");
+            Check(sim.Any(m=>m.Name=="GetSymbolTransform")&&sim.Any(m=>m.Name=="Play"),"dock anchor or native clips not wired");
+            Check(render.Any(m=>m.DeclaringType==typeof(GameClock)&&m.Name=="GetTime"),"interpolation ignores simulation clock");
+            var apply=visual.GetMethod("ApplyPosition",BindingFlags.NonPublic|BindingFlags.Instance);
+            Check(render.Any(m=>m==apply)&&sim.Any(m=>m==apply),"render or simulation skips interpolation reset");
+            Check(Calls(apply).Any(m=>m.DeclaringType.Name=="WatcherMotionClock"&&m.Name=="Progress"),"native movement bypasses rewind-safe timing");
+        });
+        Test("watcher horizontal pose is opt-in for old chamber",()=>
+        {
+            var show=typeof(ChamberPatientVisual).GetMethod("Show");var args=show.GetParameters();
+            Check(args.Length==6&&args[4].ParameterType==typeof(bool)&&args[4].HasDefaultValue&&(bool)args[4].DefaultValue==false&&args[5].HasDefaultValue&&(float)args[5].DefaultValue==1.5f,"existing chamber pose changed by default");
+        });
+        Test("bed and airborne patient use independent native appearance displays",()=>
+        {
+            var visual=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.Rescue.WatcherVisual");
+            var flags=BindingFlags.Instance|BindingFlags.NonPublic;
+            Check(visual.GetField("bedDisplay",flags)?.FieldType==typeof(ChamberPatientVisual)&&visual.GetField("cargoDisplay",flags)?.FieldType==typeof(ChamberPatientVisual),"shared patient display would replace the occupied bed during another sortie");
+            var render=Calls(visual.GetMethod("RenderEveryTick"));var cargo=Calls(visual.GetMethod("DrawCargo",flags));
+            Check(render.Any(m=>m.DeclaringType==typeof(ChamberPatientVisual)&&m.Name=="ShowAnimated")&&cargo.Any(m=>m.DeclaringType==typeof(ChamberPatientVisual)&&m.Name=="ShowAnimated"),"bed and cargo displays are not independently animated");
+            Check(!render.Any(m=>m.Name=="get_CorpseObject"),"parked corpse displayed on emergency bed");
+        });
+        Test("fallback triage and full cargo decisions are wired into production",()=>
+        {
+            var asm=typeof(ChamberProcess).Assembly;
+            var station=asm.GetType("Baiye.Resurrection.Rescue.WatcherStation");
+            var flags=BindingFlags.Instance|BindingFlags.Static|BindingFlags.NonPublic;
+            var select=Calls(station.GetMethod("FindFallbackTarget",flags));
+            var tick=Calls(station.GetMethod("Sim200ms"));
+            var escrow=Calls(station.GetMethod("ClassifyFallback",flags));
+            Check(select.Any(m=>m.Name=="ClassifyFallback")&&tick.Any(m=>m.Name=="ClassifyFallback"),"fallback decision missing at selection or arrival");
+            Check(escrow.Any(m=>m.Name=="Owns")&&escrow.Any(m=>m.Name=="ClassifyEscrow"),"fallback triage lacks verified storage ownership");
+            Check(tick.Any(m=>m.Name=="DecideCargoAtHome")&&tick.Any(m=>m.Name=="TryBeginDelivery")&&tick.Any(m=>m.Name=="ReturnEmptyAfterCargoDelivery"),"full cargo recovery not connected to flight state machine");
+            var marker=asm.GetType("Baiye.Resurrection.Rescue.WatcherCustody");
+            Check(marker.GetField("Owner").GetCustomAttributes().Any(a=>a.GetType().Name=="Serialize"),"fallback owner is not saved");
+        });
         Test("production state and patient participate in game save system",()=>
         {
             Check(typeof(ISaveLoadable).IsAssignableFrom(typeof(ChamberProcess)),"process not saved");
@@ -197,6 +330,21 @@ class Program
             Check(!calls.Any(m=>m.Name=="KDestroyGameObject"||m.Name=="Commit"||m.Name=="ConsumeIgnoringDisease"),"discard destroys material or credits treatment");
             var usable=Calls(typeof(ChamberProcess).GetMethod("UsableFood",BindingFlags.NonPublic|BindingFlags.Static));
             Check(usable.Any(m=>m.DeclaringType==typeof(Rottable.Instance)&&m.Name=="get_RotValue"),"expired edible still counts before native rot replacement");
+        });
+        Test("material adapter binds native task state and functional delivery APIs",()=>
+        {
+            var adapter=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.NativeMaterialDelivery",true);
+            var state=Calls(adapter.GetProperty("HasTask").GetMethod);
+            Check(state.Any(m=>m.DeclaringType==typeof(ManualDeliveryKG)&&m.Name=="get_DebugFetchList")&&state.Any(m=>m.DeclaringType==typeof(FetchList2)&&m.Name=="get_IsComplete"),"active native fetch state unavailable");
+            foreach(var name in new[]{"Pause","UpdateDeliveryState"})
+                Check(Calls(adapter.GetMethod(name)).Any(m=>m.DeclaringType==typeof(ManualDeliveryKG)&&m.Name==name),"native delivery API missing: "+name);
+        });
+        Test("material adapter requests and aborts through actual native API signatures",()=>
+        {
+            var adapter=typeof(ChamberProcess).Assembly.GetType("Baiye.Resurrection.NativeMaterialDelivery",true);
+            var request=Calls(adapter.GetMethod("RequestDelivery"));var abort=Calls(adapter.GetMethod("AbortDelivery"));
+            Check(request.Any(m=>m.DeclaringType==typeof(ManualDeliveryKG)&&m.Name=="RequestDelivery"&&m.GetParameters().Length==0),"native request binding missing");
+            Check(abort.Any(m=>m.DeclaringType==typeof(ManualDeliveryKG)&&m.Name=="AbortDelivery"&&m.GetParameters().Length==1&&m.GetParameters()[0].ParameterType==typeof(string)),"native abort binding missing");
         });
         Console.WriteLine(passed+" native managed contract scenarios passed (Unity world not started)");
     }

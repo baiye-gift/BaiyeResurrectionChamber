@@ -7,7 +7,7 @@ namespace Baiye.Resurrection
 {
     // Unsaved visual-only object: no MinionIdentity, AI, collider or patient ID.
     [SerializationConfig(MemberSerialization.OptIn)]
-    public sealed class ChamberPatientVisual : KMonoBehaviour,IRenderEveryTick
+    public sealed partial class ChamberPatientVisual : KMonoBehaviour,IRenderEveryTick
     {
         GameObject display;
         GameObject source;
@@ -21,18 +21,21 @@ namespace Baiye.Resurrection
         public const string CarryPose="working_loop";
         GameObject followCarrier;
         KBatchedAnimController followHousing;
-        public void Show(GameObject patient,KBatchedAnimController housing,bool breathing,GameObject carrier=null)
+        bool followHorizontal; float followCarryWidth=1.5f;
+        public string AnchorSymbol="patient_anchor";
+        public Color PatientTint=new Color32(225,249,250,235);
+        public void Show(GameObject patient,KBatchedAnimController housing,bool breathing,GameObject carrier=null,bool horizontal=false,float carryWidth=1.5f)
         {
             if(patient==null){Clear();return;}
             if(display==null||source!=patient){Clear();source=patient;Create(patient);}
             if(display==null)return;
-            bool found;var point=housing.GetSymbolTransform("patient_anchor",out found).MultiplyPoint(Vector3.zero);
+            bool found;var point=housing.GetSymbolTransform(AnchorSymbol,out found).MultiplyPoint(Vector3.zero);
             if(!found){display.SetActive(false);return;}
-            bool carried=carrier!=null;
+            bool carried=carrier!=null||horizontal;
             SelectPose(carried);
             if(display==null)return;
-            followCarrier=carrier;followHousing=housing;
-            if(carried)
+            followCarrier=carrier;followHousing=housing;followHorizontal=horizontal;followCarryWidth=carryWidth;
+            if(carrier!=null)
             {
                 var carrierAnim=carrier.GetComponent<KBatchedAnimController>();
                 point=carrierAnim.GetSymbolTransform("snapTo_pivot",out found).MultiplyPoint(Vector3.zero);
@@ -41,7 +44,7 @@ namespace Baiye.Resurrection
             point.z=Grid.GetLayerZ(Grid.SceneLayer.BuildingUse);
             if(carried)point.z=Grid.GetLayerZ(Grid.SceneLayer.Move)-.01f;
             float breath=breathing&&!carried?1+.006f*Mathf.Sin(GameClock.Instance.GetTime()*2):1;
-            float scale=carried?carryScale:fittedScale;var center=carried?carryCenter:poseCenter;
+            float scale=carried?carryScale*Mathf.Clamp(carryWidth/1.5f,0,1):fittedScale;var center=carried?carryCenter:poseCenter;
             anim.Rotation=carried?carryRotation:0;
             anim.animScale=scale;anim.animHeight=breath;
             // Pod pose is natively upright; only transport may rotate a pose.
@@ -51,17 +54,19 @@ namespace Baiye.Resurrection
         }
         public void RenderEveryTick(float dt)
         {
-            if(followCarrier!=null&&source!=null)Show(source,followHousing,false,followCarrier);
+            if(followCarrier!=null&&source!=null)Show(source,followHousing,false,followCarrier,followHorizontal,followCarryWidth);
             else if(source==null&&display!=null)Clear();
         }
-        void Create(GameObject patient)
+        void Create(GameObject patient,bool interaction=false)
         {
             // Same rendering components as FullMinionUIPortrait, using world
             // rendering without an entity template or selectable/save data.
             display=new GameObject("BaiyeChamberPatientVisual");display.SetActive(false);
             display.transform.SetParent(transform,false);
             anim=display.AddComponent<KBatchedAnimController>();
-            anim.AnimFiles=AnimationFiles();anim.animScale=.0045f;
+            var files=AnimationFiles().ToList();
+            if(interaction&&Assets.TryGetAnim("anim_incapacitated_kanim",out var incapacitated))files.Add(incapacitated);
+            anim.AnimFiles=files.ToArray();anim.animScale=.0045f;
             anim.sceneLayer=Grid.SceneLayer.BuildingUse;anim.initialAnim="";anim.isMovable=true;
             display.AddComponent<FaceGraph>();
             var accessor=display.AddComponent<Accessorizer>();
@@ -74,7 +79,7 @@ namespace Baiye.Resurrection
             ApplyAppearance(patient,accessor,wearable);
             SelectPose(false);
             if(anim==null)return;
-            anim.TintColour=new Color32(225,249,250,235);
+            anim.TintColour=PatientTint;
         }
         void SelectPose(bool carried)
         {
@@ -176,6 +181,7 @@ namespace Baiye.Resurrection
         {
             if(display!=null){display.SetActive(false);Util.KDestroyGameObject(display);}
             display=null;anim=null;source=null;followCarrier=null;followHousing=null;currentPose=null;
+            interactionFrames.Clear();
         }
         protected override void OnCleanUp(){Clear();base.OnCleanUp();}
     }

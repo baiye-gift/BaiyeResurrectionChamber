@@ -10,13 +10,27 @@ $package=Join-Path $root 'dist/BaiyeResurrectionChamber'
 New-Item -ItemType Directory -Path $package -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'bin/Release/netstandard2.1/BaiyeResurrectionChamber.dll') -Destination $package -Force
 foreach($name in @('mod.yaml','mod_info.yaml','README.md')){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $package -Force}
-$asset=Join-Path $root 'anim/assets/baiye_reconstruction'
-$assetOut=Join-Path $package 'anim/assets/baiye_reconstruction'
-New-Item -ItemType Directory -Path $assetOut -Force | Out-Null
-foreach($name in @('baiye_reconstruction_anim.bytes','baiye_reconstruction_build.bytes','baiye_reconstruction.png')){
-    $file=Join-Path $asset $name
-    if(!(Test-Path -LiteralPath $file)){throw "Missing native asset: $name"}
-    Copy-Item -LiteralPath $file -Destination $assetOut -Force
+foreach($assetName in @('baiye_reconstruction','baiye_watcher_station','baiye_watcher_drone')){
+    $asset=Join-Path $root ('anim/assets/'+$assetName)
+    $assetOut=Join-Path $package ('anim/assets/'+$assetName)
+    New-Item -ItemType Directory -Path $assetOut -Force | Out-Null
+    foreach($suffix in @('_anim.bytes','_build.bytes','.png')){
+        $name=$assetName+$suffix
+        $file=Join-Path $asset $name
+        if(!(Test-Path -LiteralPath $file)){throw "Missing native asset: $name"}
+        Copy-Item -LiteralPath $file -Destination $assetOut -Force
+    }
+}
+Copy-Item -LiteralPath (Join-Path $root 'preview.png') -Destination $package -Force
+$docsOut=Join-Path $package 'docs'
+New-Item -ItemType Directory -Path $docsOut -Force | Out-Null
+foreach($name in @('watcher-game-acceptance.md','watcher-animation-guide.md','watcher-interaction-review.md')){
+    Copy-Item -LiteralPath (Join-Path $root ('docs/'+$name)) -Destination $docsOut -Force
+}
+$previewOut=Join-Path $package 'preview'
+New-Item -ItemType Directory -Path $previewOut -Force | Out-Null
+foreach($name in @('watcher-station-final.png','watcher-native-cycle.gif','station-treating.gif','station-transfer_in.gif','drone-pickup.gif','watcher-human-cycle.gif','watcher-human-mirrored.gif','watcher-human-emergency.gif','watcher-human-return.gif','watcher-human-emergency-return.gif','watcher-human-contact.png')){
+    Copy-Item -LiteralPath (Join-Path $root ('art/preview/'+$name)) -Destination $previewOut -Force
 }
 $dlls=Get-ChildItem -LiteralPath $package -Recurse -Filter '*.dll'
 if($dlls.Count -ne 1 -or $dlls[0].Name -ne 'BaiyeResurrectionChamber.dll'){throw 'Package contains unexpected dependencies'}

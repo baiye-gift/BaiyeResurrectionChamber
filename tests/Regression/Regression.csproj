@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
-  <ItemGroup><Compile Include="../../src/TreatmentModel.cs" Link="TreatmentModel.cs" /><Compile Include="../../src/ChamberVisualState.cs" Link="ChamberVisualState.cs" /><Compile Include="../../src/ChamberSequence.cs" Link="ChamberSequence.cs" /><Compile Include="../../src/FoodSupplyPlan.cs" Link="FoodSupplyPlan.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../src/TreatmentModel.cs" Link="TreatmentModel.cs" /><Compile Include="../../src/ChamberVisualState.cs" Link="ChamberVisualState.cs" /><Compile Include="../../src/ChamberSequence.cs" Link="ChamberSequence.cs" /><Compile Include="../../src/FoodSupplyPlan.cs" Link="FoodSupplyPlan.cs" /><Compile Include="../../src/MaterialSupplyPlan.cs" Link="MaterialSupplyPlan.cs" /><Compile Include="../../src/IMaterialDeliveryPort.cs" Link="IMaterialDeliveryPort.cs" /><Compile Include="../../src/MaterialDeliveryControl.cs" Link="MaterialDeliveryControl.cs" /></ItemGroup>
 </Project>

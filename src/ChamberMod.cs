@@ -5,7 +5,7 @@ namespace Baiye.Resurrection
 {
     public sealed class ChamberMod : KMod.UserMod2
     {
-        public override void OnLoad(Harmony harmony) { ChamberStrings.Register(); base.OnLoad(harmony); }
+        public override void OnLoad(Harmony harmony) { ChamberStrings.Register(); Rescue.WatcherConfig.Register(); base.OnLoad(harmony); }
     }
     [HarmonyPatch(typeof(Db), nameof(Db.Initialize))]
     internal static class ChamberRegistration
@@ -13,8 +13,10 @@ namespace Baiye.Resurrection
         static void Postfix()
         {
             ModUtil.AddBuildingToPlanScreen((HashedString)"Medical", ChamberStrings.ID);
+            ModUtil.AddBuildingToPlanScreen((HashedString)"Medical", Rescue.WatcherConfig.ID);
             var tech=Db.Get().Techs.Get("MedicineIV");
             if(tech!=null && !tech.unlockedItemIDs.Contains(ChamberStrings.ID))tech.unlockedItemIDs.Add(ChamberStrings.ID);
+            if(tech!=null && !tech.unlockedItemIDs.Contains(Rescue.WatcherConfig.ID))tech.unlockedItemIDs.Add(Rescue.WatcherConfig.ID);
             AddEffect(ChamberStrings.WeakEffect,1800,-3);
             AddEffect(ChamberStrings.SevereEffect,0,-8);
         }
@@ -32,7 +34,7 @@ namespace Baiye.Resurrection
     [HarmonyPatch(typeof(BaseMinionConfig), nameof(BaseMinionConfig.BaseMinion))]
     internal static class PatientPrefab
     {
-        static void Postfix(GameObject __result) { __result.AddOrGet<PatientRecord>(); }
+        static void Postfix(GameObject __result) { __result.AddOrGet<PatientRecord>(); __result.AddOrGet<Rescue.WatcherCustody>(); }
     }
     [HarmonyPatch(typeof(StoredMinionConfig), nameof(StoredMinionConfig.CreatePrefab))]
     internal static class StoredPatientPrefab
@@ -53,10 +55,10 @@ namespace Baiye.Resurrection
     [HarmonyPatch(typeof(EnergyConsumer), nameof(EnergyConsumer.SetConnectionStatus))]
     internal static class ChamberPaidPower
     {
-        static void Prefix(EnergyConsumer __instance,out float __state) => __state=__instance.GetComponent<ChamberProcess>()!=null?__instance.WattsUsed:0;
+        static void Prefix(EnergyConsumer __instance,out float __state) => __state=__instance.GetComponent<ChamberProcess>()!=null||__instance.GetComponent<Rescue.WatcherStation>()!=null?__instance.WattsUsed:0;
         static void Postfix(EnergyConsumer __instance,CircuitManager.ConnectionStatus connection_status,float __state)
         {
-            if(__state>0)__instance.GetComponent<ChamberProcess>()?.Settle(__state,connection_status==CircuitManager.ConnectionStatus.Powered);
+            if(__state>0){bool paid=connection_status==CircuitManager.ConnectionStatus.Powered;__instance.GetComponent<ChamberProcess>()?.Settle(__state,paid);__instance.GetComponent<Rescue.WatcherStation>()?.Settle(__state,paid);}
         }
     }
 }

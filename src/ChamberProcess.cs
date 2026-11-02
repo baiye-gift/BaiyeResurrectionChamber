@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using KSerialization;
 using UnityEngine;
 namespace Baiye.Resurrection
@@ -12,6 +13,7 @@ namespace Baiye.Resurrection
         [Serialize] public Ref<KPrefabID> Selected;
         [Serialize] public bool Requested;
         [Serialize] public bool ReturnReady;
+        [Serialize] public bool RescueInbound;
         [Serialize] public string PatientName;
         [Serialize] public ChamberSequence Sequence=new ChamberSequence();
         public GameObject Carrier { get; private set; }
@@ -26,6 +28,13 @@ namespace Baiye.Resurrection
         FoodSupplyPlan foodPlan;
         double sourceFoodKcal,sourceKcalPerKg;
         float nextFoodScan;
+        ManualDeliveryKG[] deliveries;
+        readonly NativeMaterialDelivery[] materialPorts=new NativeMaterialDelivery[2];
+        readonly MaterialSupplyPlan[] materialPlans=new MaterialSupplyPlan[2];
+        readonly string[] materialDiagnosticKeys=new string[2];
+        readonly float[] materialDiagnosticTimes={float.NegativeInfinity,float.NegativeInfinity};
+        readonly object[] lastMaterialTasks=new object[2];
+        readonly string[] materialEvents={"initial","initial"};
         static readonly Dictionary<int,ChamberProcess> Claims=new Dictionary<int,ChamberProcess>();
         public string Block { get; private set; }="";
         public float LastTreatmentTime { get; private set; }=float.NegativeInfinity;
@@ -64,6 +73,7 @@ namespace Baiye.Resurrection
         protected override void OnSpawn()
         {
             base.OnSpawn();stores=GetComponents<Storage>();stasis=GetComponent<MinionStorage>();op=GetComponent<Operational>();energy=GetComponent<EnergyConsumer>();
+            deliveries=GetComponents<ManualDeliveryKG>();for(int i=0;i<2&&i<deliveries.Length;i++)materialPorts[i]=new NativeMaterialDelivery(deliveries[i]);
             Model=Model??new TreatmentModel();Sequence=Sequence??new ChamberSequence();Sequence.Restore(Model);claimTag=new Tag("BaiyePatientClaim_"+GetComponent<KPrefabID>().InstanceID);
             spawned=true;
             if(Requested&&Target!=null&&!HasStasis&&!Reserve(Target)){Requested=false;Selected=null;Model.Reset();Sequence.Reset();}
@@ -75,6 +85,8 @@ namespace Baiye.Resurrection
             Status("POD",()=>ChamberStrings.T("舱门 / 治疗液：","Door / treatment fluid: ")+(Sequence.Door*100).ToString("0")+"% / "+(Sequence.Fluid*100).ToString("0")+"%",()=>ChamberStrings.T("0% 舱门表示完全打开；治疗液为仓内循环，无需液体排出口。","Door 0% is fully open. Treatment fluid circulates internally; no liquid output is required."));
             Status("STOCK",()=>ChamberStrings.T("水 / 氧 / 营养：","Water / O2 / food: ")+Water.ToString("0.0")+" kg · "+Oxygen.ToString("0.0")+" kg · "+FoodKcal.ToString("0")+" kcal",()=>ChamberStrings.T("费用倍数：","Cost multiplier: ")+Model.Multiplier.ToString("0.0")+ChamberStrings.T("；空仓前可移除未用物资。错误管道物质不计入治疗。","; wrong pipe elements do not count as supplies."));
             Status("FOOD",FoodDeliveryStatus,FoodDetails);
+            Status("METAL",()=>MaterialDeliveryStatus(0),()=>MaterialDeliveryDetails(0));
+            Status("PLASTIC",()=>MaterialDeliveryStatus(1),()=>MaterialDeliveryDetails(1));
         }
         string StateTitle()
         {
@@ -103,12 +115,41 @@ namespace Baiye.Resurrection
         public void CycleTarget()
         {
             if(Occupied)return;
-            var candidates=Components.MinionIdentities.Items.Where(x=>PatientTransfer.Eligible(x)&&x.GetMyWorldId()==this.GetMyWorldId()&&ClaimAvailable(x.GetComponent<KPrefabID>().InstanceID)).OrderBy(x=>x.GetComponent<KPrefabID>().InstanceID).ToList();
+            var candidates=Components.MinionIdentities.Items.Where(x=>PatientTransfer.Eligible(x)&&!Rescue.WatcherStation.IsClaimed(x.gameObject)&&x.GetMyWorldId()==this.GetMyWorldId()&&ClaimAvailable(x.GetComponent<KPrefabID>().InstanceID)).OrderBy(x=>x.GetComponent<KPrefabID>().InstanceID).ToList();
             int current=candidates.FindIndex(x=>x.gameObject==Target);
             Selected=candidates.Count==0?null:new Ref<KPrefabID>(candidates[(current+1)%candidates.Count].GetComponent<KPrefabID>());
             Refresh();
         }
         static bool ClaimAvailable(int id)=>!Claims.TryGetValue(id,out var p)||p==null||!p.Requested;
+        public static bool IsClaimedByChamber(GameObject body)
+        {
+            var id=body?.GetComponent<KPrefabID>();return id!=null&&!ClaimAvailable(id.InstanceID);
+        }
+        public bool TryReserveRescueBody(GameObject body)
+        {
+            if(!spawned||Occupied||body==null||!body.HasTag(GameTags.Corpse)||body.GetMyWorldId()!=this.GetMyWorldId()||GetComponent<Deconstructable>()?.IsMarkedForDeconstruction()==true)return false;
+            var identity=body.GetComponent<MinionIdentity>();if(identity==null||identity.model!=MinionConfig.MODEL||!Reserve(body))return false;
+            Selected=new Ref<KPrefabID>(body.GetComponent<KPrefabID>());Requested=true;RescueInbound=true;PatientName=body.GetProperName();
+            GetComponent<Deconstructable>()?.SetAllowDeconstruction(false);Refresh();return true;
+        }
+        public void CancelRescueReservation(GameObject body)
+        {
+            if(!RescueInbound||body!=Target)return;Unreserve();Selected=null;Requested=false;RescueInbound=false;PatientName=null;Refresh();
+        }
+        public bool TryAcceptReservedRescueBody(GameObject body,Storage source)
+        {
+            if(!spawned||!RescueInbound||!Requested||body==null||body!=Target||!body.HasTag(GameTags.Corpse)||source==null||!source.items.Contains(body)||HasBody||HasStasis)return false;
+            try {
+                source.Drop(body,false);stores[0].Store(body,true,false,false);
+                if(!stores[0].items.Contains(body))throw new InvalidOperationException("Rescue transfer failed");
+                RescueInbound=false;StopFetch();Refresh();return true;
+            } catch(Exception e) {
+                Debug.LogWarning("[BaiyeResurrectionChamber] Rescue handoff failed: "+e);
+                if(stores[0].items.Contains(body))stores[0].Drop(body,false);
+                if(!source.items.Contains(body))source.Store(body,true,false,false);
+                return false;
+            }
+        }
         bool Reserve(GameObject target)
         {
             int id=target.GetComponent<KPrefabID>().InstanceID;
@@ -124,7 +165,7 @@ namespace Baiye.Resurrection
         }
         public bool Request()
         {
-            if(Occupied||Target==null||GetComponent<Deconstructable>()?.IsMarkedForDeconstruction()==true||!PatientTransfer.Eligible(Target.GetComponent<MinionIdentity>())||!Reserve(Target))return false;
+            if(Occupied||Target==null||Rescue.WatcherStation.IsClaimed(Target)||GetComponent<Deconstructable>()?.IsMarkedForDeconstruction()==true||!PatientTransfer.Eligible(Target.GetComponent<MinionIdentity>())||!Reserve(Target))return false;
             Requested=true;PatientName=TargetName;
             GetComponent<Deconstructable>()?.SetAllowDeconstruction(false);
             if(Target.HasTag(GameTags.Corpse))CreateFetch();
@@ -132,7 +173,7 @@ namespace Baiye.Resurrection
         }
         void CreateFetch()
         {
-            if(fetch!=null||Target==null)return;
+            if(fetch!=null||Target==null||RescueInbound)return;
             fetch=new FetchChore(Db.Get().ChoreTypes.FetchCritical,stores[0],TUNING.DUPLICANTSTATS.STANDARD.BaseStats.DEFAULT_MASS,new HashSet<Tag>{claimTag},FetchChore.MatchCriteria.MatchTags,GameTags.Corpse,operational_requirement:global::Operational.State.Functional);
             fetch.allowMultifetch=false;
         }
@@ -235,10 +276,8 @@ namespace Baiye.Resurrection
         }
         void UpdateDeliveries()
         {
-            var d=GetComponents<ManualDeliveryKG>();
-            d[0].capacity=(float)(100*Model.Multiplier);d[1].capacity=(float)(50*Model.Multiplier);
-            bool rebuilding=Occupied&&(Model.Stage==TreatmentStage.Empty||Model.Stage==TreatmentStage.StartCheck||Model.Stage==TreatmentStage.Rebuilding);
-            for(int i=0;i<2;i++)if(d[i].IsPaused==rebuilding)d[i].Pause(!rebuilding,"Reconstruction supplies");
+            var d=deliveries;
+            for(int i=0;i<2;i++)UpdateMaterialDelivery(i);
             var delivery=d[2];bool cleared=ClearInvalidFood();
             if(cleared)delivery.AbortDelivery("Invalid medical food removed");
             ScanFoodSources();
@@ -251,6 +290,54 @@ namespace Baiye.Resurrection
             // Clears completed lists and respects native functional requirements.
             delivery.UpdateDeliveryState();
             if(foodPlan.CanRequest&&op.MeetsRequirements(global::Operational.State.Functional))delivery.RequestDelivery();
+        }
+        Tag MaterialTag(int index)=>index==0?new Tag("RefinedMetal"):SimHashes.Polypropylene.CreateTag();
+        double MaterialMass(int index)=>index==0?Metal:Plastic;
+        bool MaterialConfigured(int index)=>deliveries!=null&&index<deliveries.Length&&deliveries[index].RequestedItemTag==MaterialTag(index)&&ReferenceEquals(deliveries[index].DebugStorage,stores[index+3]);
+        void UpdateMaterialDelivery(int index)
+        {
+            var store=stores[index+3];var required=RequiredSupplies();
+            materialPlans[index]=MaterialSupplyPlan.Create(MaterialSupplyPlan.ReserveTarget(Model,Occupied,index==1),store.GetMassAvailable(MaterialTag(index)),store.ExactMassStored(),store.capacityKg,index==0?required.Metal:required.Plastic);
+            if(index>=deliveries.Length){LogMaterialDelivery(index,"missing_component");return;}
+            var delivery=deliveries[index];var before=delivery.DebugFetchList;
+            if(!MaterialConfigured(index)){delivery.Pause(true,"Medical material delivery configuration mismatch");delivery.AbortDelivery("Medical material delivery configuration mismatch");materialEvents[index]="configuration_mismatch";}
+            else
+            {
+                bool increased=materialPlans[index].CapacityKg-delivery.capacity>0.001;
+                MaterialDeliveryControl.Apply(materialPorts[index],materialPlans[index],op.MeetsRequirements(global::Operational.State.Functional));
+                var after=delivery.DebugFetchList;
+                if(before!=after)materialEvents[index]=after==null?(before!=null&&before.IsComplete?"completed":"cancelled"):(increased&&before!=null?"retargeted_and_submitted":"submitted");
+                else if(lastMaterialTasks[index]!=after)materialEvents[index]="native_task_changed";
+            }
+            lastMaterialTasks[index]=delivery.DebugFetchList;LogMaterialDelivery(index,materialEvents[index]);
+        }
+        string MaterialDeliveryState(int index)
+        {
+            var plan=materialPlans[index];
+            if(plan.TargetKg<=0)return ChamberStrings.T("当前阶段无需补货","No refill needed in this stage");
+            if(!MaterialConfigured(index))return ChamberStrings.T("配送配置异常，已记录日志","Delivery configuration error; logged");
+            if(!plan.NeedsMaterial)return ChamberStrings.T("储备充足","Reserve ready");
+            if(!plan.CanRequest)return ChamberStrings.T("材料仓已满，仍缺料","Storage full; material still missing");
+            if(!op.MeetsRequirements(global::Operational.State.Functional))return ChamberStrings.T("配送等待建筑恢复可用","Delivery waiting for a functional building");
+            var delivery=deliveries[index];var list=delivery.DebugFetchList;
+            if(delivery.IsPaused)return ChamberStrings.T("配送暂停，已记录日志","Delivery paused; logged");
+            if(list==null||list.IsComplete)return ChamberStrings.T("补货任务尚未生成，已记录日志","Refill task not created yet; logged");
+            if(!list.InProgress)return ChamberStrings.T("补货任务已提交，等待领取","Refill task submitted; awaiting assignment");
+            return ChamberStrings.T("正在配送","Delivery in progress");
+        }
+        string MaterialDeliveryStatus(int index)=>ChamberStrings.T(index==0?"精炼金属：":"塑料：",index==0?"Refined metal: ":"Plastic: ")+MaterialMass(index).ToString("0.###")+" / "+materialPlans[index].TargetKg.ToString("0.###")+" kg · "+MaterialDeliveryState(index);
+        string MaterialDeliveryDetails(int index)=>MaterialDeliveryStatus(index)+ChamberStrings.T("\n数值为舱内库存 / 当前补货目标：启动前备齐整份耗材，重建期间目标随剩余治疗需求下降。基地库存需复制人搬入。任务已提交不代表已有复制人领取。","\nChamber stock / current refill target: prepare the full startup bill, then reduce the target with remaining reconstruction needs. Colony stock must be delivered. A submitted task is not an assigned task.")+ChamberStrings.T("\n材料仓总重 / 容量：","\nMaterial storage mass / capacity: ")+stores[index+3].ExactMassStored().ToString("0.###")+" / "+stores[index+3].capacityKg.ToString("0.###")+" kg"+ChamberStrings.T("\n搬运遵守工作日程、优先级与寻路；日志中的候选来源量不保证可达。","\nDelivery respects work schedules, priorities and paths; candidate source mass in the log does not guarantee reachability.");
+        void LogMaterialDelivery(int index,string action)
+        {
+            var delivery=index<deliveries.Length?deliveries[index]:null;var task=delivery?.DebugFetchList;var plan=materialPlans[index];
+            string key=Model.Stage+"|"+Occupied+"|"+plan.NeedsMaterial+"|"+plan.CanRequest+"|"+MaterialConfigured(index)+"|"+delivery?.IsPaused+"|"+op.IsFunctional+"|"+Operational+"|"+(task!=null?RuntimeHelpers.GetHashCode(task):0)+"|"+task?.IsComplete+"|"+task?.InProgress;
+            float now=GameClock.Instance.GetTime(),elapsed=now-materialDiagnosticTimes[index];
+            if(elapsed<5||(key==materialDiagnosticKeys[index]&&(!plan.NeedsMaterial||elapsed<30)))return;
+            materialDiagnosticKeys[index]=key;materialDiagnosticTimes[index]=now;
+            double candidate=0;int world=this.GetMyWorldId();Tag tag=MaterialTag(index);
+            foreach(var item in Components.Pickupables.Items)
+                if(item!=null&&item.GetMyWorldId()==world&&item.storage!=stores[index+3]&&item.gameObject.HasTag(tag)&&!item.gameObject.HasTag(GameTags.StoredPrivate)&&!item.gameObject.HasTag(GameTags.MarkedForMove))candidate+=Math.Max(0,item.UnreservedFetchAmount);
+            Debug.Log(FormattableString.Invariant($"[BaiyeResurrectionChamber][MaterialDelivery] version=0.1.7 chamber={GetComponent<KPrefabID>().InstanceID} world={world} material={tag} stage={Model.Stage} requested={Requested} event={action} stockKg={MaterialMass(index):0.######} taggedKg={stores[index+3].GetMassAvailable(tag):0.######} targetKg={plan.TargetKg} nativeCapacityKg={delivery?.capacity} totalKg={stores[index+3].ExactMassStored()} storageLimitKg={stores[index+3].capacityKg} configured={MaterialConfigured(index)} requestedTag={delivery?.RequestedItemTag} paused={delivery?.IsPaused} functional={op.IsFunctional} operational={Operational} task={task!=null} complete={task?.IsComplete} inProgress={task?.InProgress} candidateUnreservedKg={candidate} taskOrders={task?.FetchOrders.Count}"));
         }
         bool ClearInvalidFood()
         {
@@ -315,7 +402,7 @@ namespace Baiye.Resurrection
         {
             var patient=PatientTransfer.Release(stasis,Model,Grid.CellToPosCBC(cell,Grid.SceneLayer.Move),emergency);
             if(patient==null)return false;
-            Unreserve();Selected=null;Requested=false;ReturnReady=false;Model.Reset();Sequence.Reset();Carrier=null;StopFetch();
+            Unreserve();Selected=null;Requested=false;ReturnReady=false;RescueInbound=false;Model.Reset();Sequence.Reset();Carrier=null;StopFetch();
             LastReleaseTime=GameClock.Instance.GetTime();Refresh();return true;
         }
         public bool Cancel()
@@ -323,7 +410,7 @@ namespace Baiye.Resurrection
             GetComponent<ChamberDoctor>()?.Cancel();
             if(HasStasis)return Release(true);
             StopFetch();GetComponent<ChamberPatientReturn>()?.Cancel();Unreserve();
-            if(HasBody)stores[0].DropAll();Selected=null;Requested=false;ReturnReady=false;Model.Reset();Sequence.Reset();Refresh();return true;
+            if(HasBody)stores[0].DropAll();Selected=null;Requested=false;ReturnReady=false;RescueInbound=false;Model.Reset();Sequence.Reset();Refresh();return true;
         }
         public void Refresh(){if(DetailsScreen.Instance?.target==gameObject)DetailsScreen.Instance.Refresh(gameObject);}
         void OnDestroyed(object data)

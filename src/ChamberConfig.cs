@@ -47,7 +47,7 @@ namespace Baiye.Resurrection
         static void Deliver(GameObject go,Storage store,Tag tag,float cap)
         {
             var d=go.AddComponent<ManualDeliveryKG>();d.SetStorage(store);d.RequestedItemTag=tag;d.capacity=cap;
-            d.refillMass=1;d.MinimumMass=.001f;d.choreTypeIDHash=Db.Get().ChoreTypes.DoctorFetch.IdHash;d.operationalRequirement=Operational.State.Functional;
+            d.refillMass=0;d.MinimumMass=.001f;d.choreTypeIDHash=Db.Get().ChoreTypes.DoctorFetch.IdHash;d.operationalRequirement=Operational.State.Functional;
         }
         public override void DoPostConfigureComplete(GameObject go)
         {

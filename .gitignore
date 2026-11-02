@@ -10,3 +10,9 @@ dist/
 __pycache__/
 *.pyc
 docs/ai-change-log.md
+
+# Local development records and generated machine evidence
+docs/superpowers/
+docs/recovery-0.1.7.md
+docs/watcher-development-verification.md
+art/preview/watcher-human-evidence.json

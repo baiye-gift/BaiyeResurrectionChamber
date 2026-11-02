@@ -75,7 +75,19 @@ class Program
         Test("unknown food source offers small retryable native batch",()=>{var p=FoodSupplyPlan.Create(12000,0,0,0,200,0);Check(p.CanRequest,"no task for a future printed food");Near(p.CapacityKg,1);});
         Test("delivery respects storage space and bounded mass batch",()=>{var p=FoodSupplyPlan.Create(12000,0,19,19,20,1);Near(p.CapacityKg,20);var huge=FoodSupplyPlan.Create(12000,0,0,0,2000000,1);Near(huge.CapacityKg,200);});
         Test("invalid stock inputs never generate infinite delivery amount",()=>{var p=FoodSupplyPlan.Create(12000,double.NaN,double.NaN,0,200,double.NaN);Check(p.CanRequest,"invalid stock suppressed retry");Near(p.CapacityKg,1);Check(!FoodSupplyPlan.Create(double.PositiveInfinity,0,0,0,200,1).CanRequest,"infinite demand");});
+        Test("reconstruction reserves only remaining metal and plastic",()=>{var m=Building();m.Commit(m.Preview(900));Near(MaterialSupplyPlan.ReserveTarget(m,true,false),50);Near(MaterialSupplyPlan.ReserveTarget(m,true,true),25);Near(MaterialSupplyPlan.ReserveTarget(m,false,false),0);});
+        Test("small rounding deficit does not refill unless current bill requires it",()=>{Check(!MaterialSupplyPlan.Create(100,99.995,99.995,200).CanRequest,"rounding triggered refill");Check(MaterialSupplyPlan.Create(100,99.995,99.995,200,100).CanRequest,"current bill shortage ignored");});
+        Test("material refill respects storage space",()=>{var p=MaterialSupplyPlan.Create(100,10,198,200);Check(p.CanRequest,"space ignored");Near(p.CapacityKg,12);Check(!MaterialSupplyPlan.Create(100,10,200,200).CanRequest,"full storage requested");});
+        Test("falling material target preserves an active delivery",()=>{var port=new DeliveryPort{Capacity=100,HasTask=true};MaterialDeliveryControl.Apply(port,MaterialSupplyPlan.Create(50,20,20,200),true);Check(port.HasTask&&port.Aborts==0,"in-flight delivery cancelled");Near(port.Capacity,50);});
+        Test("increased material target replaces an active delivery",()=>{var port=new DeliveryPort{Capacity=20,HasTask=true};MaterialDeliveryControl.Apply(port,MaterialSupplyPlan.Create(50,10,10,200),true);Check(port.Aborts==1&&port.Requests==1&&port.HasTask,"increased target not replaced");});
+        Test("satisfied material reserve cancels active delivery",()=>{var port=new DeliveryPort{Capacity=100,HasTask=true};MaterialDeliveryControl.Apply(port,MaterialSupplyPlan.Create(50,50,50,200),true);Check(port.Aborts==1&&!port.HasTask&&port.Paused,"satisfied delivery remains active");});
         Console.WriteLine(passed+" treatment and visual behavior scenarios passed");
+    }
+    sealed class DeliveryPort:IMaterialDeliveryPort
+    {
+        public float Capacity {get;set;} public float RefillMass {get;set;} public bool HasTask {get;set;} public bool Paused; public int Aborts,Requests;
+        public void Pause(bool value){Paused=value;} public void AbortDelivery(string reason){Aborts++;HasTask=false;}
+        public void UpdateDeliveryState(){} public void RequestDelivery(){Requests++;HasTask=true;}
     }
     static TreatmentModel Admit(int prior=0){var m=new TreatmentModel();m.Admit(prior);return m;}
     static ChamberSequence Sealed(){var s=new ChamberSequence();s.Admit();s.Tick(2,true);return s;}
